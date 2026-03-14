@@ -115,10 +115,21 @@ def rolling_calibrate_oof(
     seasons = sorted(pred_df[season_col].astype(int).unique())
     out_parts: list[pd.DataFrame] = []
 
-    for valid_season in seasons[1:]:
+    for valid_season in seasons:
         tr = pred_df[pred_df[season_col].astype(int) < valid_season].copy()
         va = pred_df[pred_df[season_col].astype(int) == valid_season].copy()
-        if tr.empty or va.empty:
+        if va.empty:
+            continue
+
+        # For the earliest available OOF season there is no prior calibration history.
+        # Keep base probabilities so calibration outputs preserve row parity.
+        if tr.empty:
+            o = va.copy()
+            o[pred_col] = _apply_shrinkage(_clip_prob(va[pred_col].to_numpy()), shrink=shrink)
+            o["cal_method"] = method
+            o["cal_scope"] = scope_key
+            o["cal_shrink"] = float(shrink)
+            out_parts.append(o)
             continue
 
         cal_train = tr

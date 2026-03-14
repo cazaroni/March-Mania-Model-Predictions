@@ -21,12 +21,22 @@ def build_stack_features(base_oof: pd.DataFrame) -> tuple[pd.DataFrame, list[str
     if "IsTourney" in base_oof.columns:
         key_cols.append("IsTourney")
 
+    prior_cols = _rating_prior_columns(base_oof)
+
     wide = (
         base_oof.pivot_table(index=key_cols, columns="model", values="pred", aggfunc="mean")
         .reset_index()
         .rename_axis(columns=None)
     )
-    pred_cols = [c for c in wide.columns if c not in key_cols]
+
+    # Preserve prior columns (constant across model rows for the same key).
+    if prior_cols:
+        prior_frame = base_oof[key_cols + prior_cols].drop_duplicates(subset=key_cols, keep="first")
+        wide = wide.merge(prior_frame, on=key_cols, how="left")
+
+    # Meta features should be base model predictions only.
+    model_cols = [str(m) for m in sorted(base_oof["model"].astype(str).unique())]
+    pred_cols = [c for c in model_cols if c in wide.columns]
     return wide, pred_cols
 
 
