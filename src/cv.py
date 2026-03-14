@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import time
 from typing import Callable, Dict, Iterable, List
 
 import numpy as np
@@ -48,6 +49,8 @@ def run_rolling_cv(
     season_col: str = "Season",
     y_col: str = "y_true",
     meta_cols: list[str] | None = None,
+    progress_label: str | None = None,
+    progress: bool = True,
 ) -> CVResult:
     """Run leakage-safe rolling CV (train seasons < t, validate season == t)."""
     if predict_fn is None:
@@ -55,18 +58,32 @@ def run_rolling_cv(
     if meta_cols is None:
         meta_cols = ["Season", "Team1", "Team2", "IsTourney"]
 
-    seasons = rolling_validation_seasons(data[season_col])
+    season_values = data[season_col].astype(int)
+    seasons = rolling_validation_seasons(season_values)
     oof_parts: list[pd.DataFrame] = []
     fold_metric_parts: list[pd.DataFrame] = []
     bin_parts: list[pd.DataFrame] = []
 
-    for valid_season in seasons:
-        train_mask = data[season_col].astype(int) < int(valid_season)
-        valid_mask = data[season_col].astype(int) == int(valid_season)
+    total_folds = len(seasons)
+    completed_folds = 0
+    elapsed_seconds = 0.0
+
+    for fold_index, valid_season in enumerate(seasons, start=1):
+        fold_start = time.perf_counter()
+        train_mask = season_values < int(valid_season)
+        valid_mask = season_values == int(valid_season)
 
         train_df = data.loc[train_mask].copy()
         valid_df = data.loc[valid_mask].copy()
+        if progress:
+            label = progress_label or model_name
+            print(
+                f"[CV] {label} fold {fold_index}/{total_folds} | season={int(valid_season)} | train={len(train_df):,} | valid={len(valid_df):,}",
+                flush=True,
+            )
         if train_df.empty or valid_df.empty:
+            if progress:
+                print(f"[CV] {label} fold {fold_index}/{total_folds} skipped (empty split)", flush=True)
             continue
 
         model = model_factory()
@@ -88,6 +105,18 @@ def run_rolling_cv(
             bins_df["model"] = model_name
             bins_df["valid_season"] = int(valid_season)
             bin_parts.append(bins_df)
+
+        fold_elapsed = time.perf_counter() - fold_start
+        completed_folds += 1
+        elapsed_seconds += fold_elapsed
+        avg_fold = elapsed_seconds / max(completed_folds, 1)
+        remaining = total_folds - fold_index
+        eta_seconds = avg_fold * max(remaining, 0)
+        if progress:
+            print(
+                f"[CV] {label} fold {fold_index}/{total_folds} done in {fold_elapsed:.1f}s | ETA ~{eta_seconds/60.0:.1f}m",
+                flush=True,
+            )
 
     oof_df = pd.concat(oof_parts, ignore_index=True) if oof_parts else pd.DataFrame()
     fold_metrics_df = pd.concat(fold_metric_parts, ignore_index=True) if fold_metric_parts else pd.DataFrame()

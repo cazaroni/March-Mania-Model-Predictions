@@ -71,28 +71,38 @@ def build_hgb_isotonic_model() -> object:
     return CalibratedIsotonicWrapper(base_model=base)
 
 
-def build_base_model_factories() -> Dict[str, Callable[[], object]]:
-    """Phase-4 base model factories, including optional external boosters."""
+def build_base_model_factories(*, include_extras: bool = False) -> Dict[str, Callable[[], object]]:
+    """Phase-4 base model factories.
+
+    By default keeps a lightweight set for faster rolling CV on HPC.
+    Extra models can be enabled when desired.
+    """
     factories: Dict[str, Callable[[], object]] = {
         "logreg": build_logreg_model,
         "hgb": build_hgb_isotonic_model,
-        "mlp": lambda: Pipeline(
-            [
-                ("imputer", SimpleImputer(strategy="median")),
-                ("scaler", StandardScaler()),
-                (
-                    "model",
-                    MLPClassifier(
-                        hidden_layer_sizes=(128, 64),
-                        activation="relu",
-                        max_iter=300,
-                        alpha=1e-4,
-                        random_state=42,
-                    ),
-                ),
-            ]
-        ),
     }
+
+    if not include_extras:
+        return factories
+
+    factories["mlp"] = lambda: Pipeline(
+        [
+            ("imputer", SimpleImputer(strategy="median")),
+            ("scaler", StandardScaler()),
+            (
+                "model",
+                MLPClassifier(
+                    hidden_layer_sizes=(128, 64),
+                    activation="relu",
+                    max_iter=500,
+                    alpha=1e-4,
+                    random_state=42,
+                    early_stopping=True,
+                    n_iter_no_change=15,
+                ),
+            ),
+        ]
+    )
 
     try:
         from lightgbm import LGBMClassifier  # type: ignore

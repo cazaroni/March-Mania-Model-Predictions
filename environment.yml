@@ -1,0 +1,44 @@
+name: ncaa-pipeline
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  # Python
+  - python=3.11
+  
+  # Core Data Science
+  - numpy
+  - pandas
+  - scipy
+  - scikit-learn
+  
+  # Machine Learning
+  - xgboost
+  - lightgbm
+  - catboost
+  
+  # GPU Support (for YUCA)
+  - cuda-version=12.1
+  - cudatoolkit=12.1
+  
+  # Utilities
+  - matplotlib
+  - seaborn
+  - jupyter
+  - jupyterlab
+  - ipython
+  
+  # Development
+  - pytest
+  - black
+  - flake8
+  
+  # Optimization & Performance
+  - numba
+  - bottleneck
+  
+  # Pip packages
+  - pip
+  - pip:
+    - pyarrow>=10.0.0
+    - polars
