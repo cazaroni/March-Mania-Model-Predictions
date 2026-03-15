@@ -122,6 +122,8 @@ def feature_columns_for_training(df: pd.DataFrame) -> list[str]:
         "Cluster",
         "Neighbor",
         "Archetype",
+        "LSTM_",
+        "GRU_",
     )
     cols = [c for c in df.columns if any(c.startswith(p) for p in keep_prefixes) and c not in ["Season", "Team1", "Team2"]]
     return cols
