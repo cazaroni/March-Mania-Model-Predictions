@@ -1,10 +1,11 @@
-"""End-to-end reproducible NCAA modeling pipeline (phases 0-4)."""
+﻿"""End-to-end reproducible NCAA modeling pipeline (phases 0-5)."""
 
 from __future__ import annotations
 
 import os
 from pathlib import Path
 import time
+import traceback
 
 import numpy as np
 import pandas as pd
@@ -32,6 +33,25 @@ def _ensure_dirs() -> None:
         d.mkdir(parents=True, exist_ok=True)
 
 
+def _output_suffix() -> str:
+    suffix = os.environ.get("NCAA_OUTPUT_SUFFIX", "").strip()
+    if not suffix:
+        return ""
+    return suffix if suffix.startswith("_") else f"_{suffix}"
+
+
+def _oof_csv(stem: str) -> Path:
+    return OOF_DIR / f"{stem}{_output_suffix()}.csv"
+
+
+def _eval_csv(stem: str) -> Path:
+    return EVAL_DIR / f"{stem}{_output_suffix()}.csv"
+
+
+def _submission_csv(stem: str) -> Path:
+    return SUBMISSIONS_DIR / f"{stem}{_output_suffix()}.csv"
+
+
 def _combine_team_features(basic: pd.DataFrame, ratings: pd.DataFrame) -> pd.DataFrame:
     out = basic.merge(ratings, on=["Season", "TeamID"], how="left")
     numeric_cols = [c for c in out.columns if c not in ["Season", "TeamID"]]
@@ -47,6 +67,56 @@ def _combine_team_features(basic: pd.DataFrame, ratings: pd.DataFrame) -> pd.Dat
     return out
 
 
+def _build_graph_games_with_margin(
+    reg_compact: pd.DataFrame,
+    tourney_compact: pd.DataFrame,
+    *,
+    include_tourney_edges: bool = False,
+) -> pd.DataFrame:
+    """Build canonical matchup rows with signed margins for graph SSL tasks.
+
+    By default uses regular-season edges only to avoid leaking tournament outcomes.
+    """
+
+    def _canonical(df: pd.DataFrame) -> pd.DataFrame:
+        keep_cols = ["Season", "WTeamID", "LTeamID", "WScore", "LScore"]
+        if "WLoc" in df.columns:
+            keep_cols.append("WLoc")
+        out = df[keep_cols].copy()
+        out["Team1"] = out[["WTeamID", "LTeamID"]].min(axis=1)
+        out["Team2"] = out[["WTeamID", "LTeamID"]].max(axis=1)
+        out["y_true"] = (out["WTeamID"] == out["Team1"]).astype(int)
+        raw_margin = out["WScore"].astype(float) - out["LScore"].astype(float)
+        out["Margin"] = np.where(out["y_true"] == 1, raw_margin, -raw_margin)
+        if "WLoc" not in out.columns:
+            out["WLoc"] = "N"
+        out["WLoc"] = out["WLoc"].fillna("N").astype(str).str.upper()
+        out.loc[~out["WLoc"].isin(["H", "A", "N"]), "WLoc"] = "N"
+        return out[["Season", "Team1", "Team2", "y_true", "Margin", "WLoc"]]
+
+    reg = _canonical(reg_compact)
+    reg["IsTourney"] = 0
+    if include_tourney_edges:
+        trn = _canonical(tourney_compact)
+        trn["IsTourney"] = 1
+        return pd.concat([reg, trn], ignore_index=True)
+    return reg
+
+
+def _encode_archetype_pair(graph_features: pd.DataFrame) -> pd.DataFrame:
+    if graph_features.empty or "ArchetypePair" not in graph_features.columns:
+        return graph_features
+
+    out = graph_features.copy()
+    out["ArchetypePair_enc"] = (
+        out.groupby("Season")["ArchetypePair"]
+        .transform(lambda s: pd.factorize(s, sort=True)[0])
+        .astype(np.int32)
+    )
+    out = out.drop(columns=["ArchetypePair"])
+    return out
+
+
 def _run_gender_pipeline(
     *,
     gender: str,
@@ -54,9 +124,45 @@ def _run_gender_pipeline(
     tourney_compact: pd.DataFrame,
     team_features: pd.DataFrame,
     include_extra_models: bool = False,
+    graph_features: pd.DataFrame | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     games = build_game_training_rows(reg_compact, tourney_compact)
     train_df = build_matchup_matrix(games, team_features)
+    
+    # Phase 6: Integrate graph features if available
+    if graph_features is not None and not graph_features.empty:
+        merge_keys = ["Season", "Team1", "Team2"]
+        gf = graph_features.copy()
+        feature_cols = [c for c in gf.columns if c not in merge_keys]
+        if gf.duplicated(subset=merge_keys).any():
+            numeric_cols = [c for c in feature_cols if pd.api.types.is_numeric_dtype(gf[c])]
+            gf = gf.groupby(merge_keys, as_index=False)[numeric_cols].mean()
+
+        pre_rows = len(train_df)
+        train_df = train_df.merge(gf, on=merge_keys, how="left")
+        post_rows = len(train_df)
+        if post_rows != pre_rows:
+            raise RuntimeError(
+                f"Graph feature merge changed row count for gender={gender}: {pre_rows} -> {post_rows}."
+            )
+
+        if "GraphWinProb" in train_df.columns:
+            train_df["GraphWinProb"] = train_df["GraphWinProb"].fillna(0.5)
+            use_graph_winprob = os.environ.get("NCAA_PHASE6_USE_GRAPH_WINPROB", "0").strip().lower() in {
+                "1",
+                "true",
+                "yes",
+                "y",
+            }
+            if not use_graph_winprob:
+                train_df = train_df.drop(columns=["GraphWinProb"])
+        graph_cols = [
+            c
+            for c in train_df.columns
+            if c.startswith(("Embed", "Cluster", "Neighbor", "Graph", "Archetype"))
+        ]
+        print(f"[PIPELINE] gender={gender.upper()} integrated {len(graph_cols)} graph features", flush=True)
+    
     # Preserve one-row-per-game identity for stack pivoting.
     train_df["GameRowID"] = np.arange(len(train_df), dtype=np.int64)
     feature_cols = feature_columns_for_training(train_df)
@@ -112,7 +218,7 @@ def _run_gender_pipeline(
             if "IsTourney" in base_df.columns:
                 out_cols.insert(5, "IsTourney")
             out_cols.extend([c for c in prior_meta_cols if c in base_df.columns])
-            base_df[out_cols].to_csv(OOF_DIR / f"oof_{str(base_name).lower()}_{gender.lower()}.csv", index=False)
+            base_df[out_cols].to_csv(_oof_csv(f"oof_{str(base_name).lower()}_{gender.lower()}"), index=False)
 
     if not base_oof.empty:
         stack_tourney_weight = float(os.environ.get("NCAA_STACK_TOURNEY_WEIGHT", "4.0"))
@@ -128,9 +234,9 @@ def _run_gender_pipeline(
             if "IsTourney" in stack_oof.columns:
                 stack_out_cols.insert(4, "IsTourney")
             stack_out = stack_oof[stack_out_cols].copy()
-            stack_out.to_csv(OOF_DIR / f"oof_stack_{gender.lower()}.csv", index=False)
+            stack_out.to_csv(_oof_csv(f"oof_stack_{gender.lower()}"), index=False)
             if not stack_diag.empty:
-                stack_diag.to_csv(EVAL_DIR / f"stack_diagnostics_{gender.lower()}.csv", index=False)
+                stack_diag.to_csv(_eval_csv(f"stack_diagnostics_{gender.lower()}"), index=False)
 
             stack_eval_metrics, stack_eval_bins = evaluate_by_regime(stack_oof, y_col="y_true", pred_col="pred", tourney_flag_col="IsTourney")
             stack_eval_metrics["model"] = "stack"
@@ -153,9 +259,9 @@ def _run_gender_pipeline(
             if "IsTourney" in stack_t_oof.columns:
                 stack_t_out_cols.insert(4, "IsTourney")
             stack_t_out = stack_t_oof[stack_t_out_cols].copy()
-            stack_t_out.to_csv(OOF_DIR / f"oof_stack_tourney_{gender.lower()}.csv", index=False)
+            stack_t_out.to_csv(_oof_csv(f"oof_stack_tourney_{gender.lower()}"), index=False)
             if not stack_t_diag.empty:
-                stack_t_diag.to_csv(EVAL_DIR / f"stack_diagnostics_tourney_{gender.lower()}.csv", index=False)
+                stack_t_diag.to_csv(_eval_csv(f"stack_diagnostics_tourney_{gender.lower()}"), index=False)
 
             stack_t_eval_metrics, stack_t_eval_bins = evaluate_by_regime(
                 stack_t_oof,
@@ -177,7 +283,7 @@ def _run_gender_pipeline(
 def _write_submission_template(sub_df: pd.DataFrame) -> None:
     out = sub_df[["ID"]].copy()
     out["Pred"] = 0.5
-    out.to_csv(SUBMISSIONS_DIR / "submission_template.csv", index=False)
+    out.to_csv(_submission_csv("submission_template"), index=False)
 
 
 def _run_calibration_phase(
@@ -187,19 +293,20 @@ def _run_calibration_phase(
     bins: pd.DataFrame,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Phase 5: rolling calibration over selected model OOF predictions."""
-    methods = [m.strip() for m in os.environ.get("NCAA_CAL_METHODS", "platt,isotonic,temperature").split(",") if m.strip()]
+    methods = [m.strip() for m in os.environ.get("NCAA_CAL_METHODS", "platt,temperature").split(",") if m.strip()]
     scopes = [s.strip() for s in os.environ.get("NCAA_CAL_SCOPES", "all,tournament_only").split(",") if s.strip()]
     shrink_values = [
         float(x.strip())
-        for x in os.environ.get("NCAA_CAL_SHRINKS", "0.0,0.08").split(",")
+        for x in os.environ.get("NCAA_CAL_SHRINKS", "0.0,0.02,0.04,0.06").split(",")
         if x.strip()
     ]
 
     candidate_files = {
-        "logreg": OOF_DIR / f"oof_logreg_{gender.lower()}.csv",
-        "stack": OOF_DIR / f"oof_stack_{gender.lower()}.csv",
-        "stack_tourney": OOF_DIR / f"oof_stack_tourney_{gender.lower()}.csv",
+        "logreg": _oof_csv(f"oof_logreg_{gender.lower()}"),
+        "stack": _oof_csv(f"oof_stack_{gender.lower()}"),
+        "stack_tourney": _oof_csv(f"oof_stack_tourney_{gender.lower()}"),
     }
+    best_rows: list[dict[str, float | str]] = []
 
     for base_name, path in candidate_files.items():
         if not path.exists():
@@ -258,12 +365,27 @@ def _run_calibration_phase(
                         best_label = label
 
         if not best_oof.empty:
-            best_path = OOF_DIR / f"oof_{base_name}_cal_best_{gender.lower()}.csv"
+            best_path = _oof_csv(f"oof_{base_name}_cal_best_{gender.lower()}")
             best_oof[[c for c in ["Season", "Team1", "Team2", "y_true", "pred", "IsTourney"] if c in best_oof.columns]].to_csv(
                 best_path,
                 index=False,
             )
             print(f"[CAL] gender={gender.upper()} source={base_name} best={best_label} brier={best_tourney_brier:.6f}", flush=True)
+            best_rows.append(
+                {
+                    "gender": gender.lower(),
+                    "source_model": base_name,
+                    "best_model_label": best_label,
+                    "best_tournament_brier": float(best_tourney_brier),
+                    "best_oof_path": str(best_path),
+                }
+            )
+
+    if best_rows:
+        pd.DataFrame(best_rows).sort_values("best_tournament_brier").to_csv(
+            _eval_csv(f"calibration_best_{gender.lower()}"),
+            index=False,
+        )
 
     return fold_metrics, bins
 
@@ -272,6 +394,7 @@ def main() -> None:
     _ensure_dirs()
     data = load_data(DATA_DIR)
     include_extra_models = os.environ.get("NCAA_ENABLE_EXTRA_MODELS", "0").strip().lower() in {"1", "true", "yes", "y"}
+    phase6_enabled = os.environ.get("NCAA_PHASE6_ENABLE", "1").strip().lower() in {"1", "true", "yes", "y"}
 
     # Ratings layer (Phase 2)
     m_ratings = build_and_save_ratings(
@@ -299,6 +422,110 @@ def main() -> None:
     m_team_features = _combine_team_features(m_basic, m_ratings)
     w_team_features = _combine_team_features(w_basic, w_ratings)
 
+    # Phase 6: Graph embeddings + feature extraction
+    m_graph_features = pd.DataFrame()
+    w_graph_features = pd.DataFrame()
+    if phase6_enabled:
+        print("[PHASE6] starting graph embedding phase...", flush=True)
+        try:
+            from graph_embed import _load_embeddings, extract_graph_features, train_graph_embedding
+
+            include_tourney_edges = os.environ.get("NCAA_PHASE6_INCLUDE_TOURNEY_EDGES", "0").strip().lower() in {
+                "1",
+                "true",
+                "yes",
+                "y",
+            }
+
+            m_games = _build_graph_games_with_margin(
+                data["m_reg"],
+                data["m_tourney"],
+                include_tourney_edges=include_tourney_edges,
+            )
+            w_games = _build_graph_games_with_margin(
+                data["w_reg"],
+                data["w_tourney"],
+                include_tourney_edges=include_tourney_edges,
+            )
+
+            phase6_dim = int(os.environ.get("NCAA_PHASE6_EMBEDDING_DIM", "64"))
+            phase6_layers = int(os.environ.get("NCAA_PHASE6_GNN_LAYERS", "2"))
+            phase6_epochs = int(os.environ.get("NCAA_PHASE6_EPOCHS", "30"))
+            phase6_lr = float(os.environ.get("NCAA_PHASE6_LR", "0.001"))
+            retrain = os.environ.get("NCAA_PHASE6_RETRAIN", "0").strip().lower() in {"1", "true", "yes", "y"}
+
+            # On ROCm builds (MI210), torch.cuda.is_available() is also the expected check.
+            device = "cuda" if __import__("torch").cuda.is_available() else "cpu"
+
+            m_emb_path = FEATURES_DIR / "graph_embeddings_m.parquet"
+            w_emb_path = FEATURES_DIR / "graph_embeddings_w.parquet"
+
+            if not retrain and m_emb_path.exists():
+                print(f"[PHASE6] loading cached embeddings from {m_emb_path}", flush=True)
+                m_emb_dict = _load_embeddings(m_emb_path)
+                m_graph_winprob = pd.DataFrame()
+            else:
+                m_emb_dict, _, m_graph_winprob = train_graph_embedding(
+                    games=m_games,
+                    team_features=m_team_features,
+                    game_locations=m_games[["Season", "Team1", "Team2", "WLoc"]],
+                    gender="m",
+                    embedding_dim=phase6_dim,
+                    num_layers=phase6_layers,
+                    epochs=phase6_epochs,
+                    lr=phase6_lr,
+                    device=device,
+                    embeddings_path=m_emb_path,
+                )
+            m_graph_features = extract_graph_features(
+                games=m_games,
+                team_features=m_team_features,
+                embeddings_dict=m_emb_dict,
+                gender="m",
+                graph_winprob=m_graph_winprob,
+            )
+            m_graph_features = _encode_archetype_pair(m_graph_features)
+
+            if not retrain and w_emb_path.exists():
+                print(f"[PHASE6] loading cached embeddings from {w_emb_path}", flush=True)
+                w_emb_dict = _load_embeddings(w_emb_path)
+                w_graph_winprob = pd.DataFrame()
+            else:
+                w_emb_dict, _, w_graph_winprob = train_graph_embedding(
+                    games=w_games,
+                    team_features=w_team_features,
+                    game_locations=w_games[["Season", "Team1", "Team2", "WLoc"]],
+                    gender="w",
+                    embedding_dim=phase6_dim,
+                    num_layers=phase6_layers,
+                    epochs=phase6_epochs,
+                    lr=phase6_lr,
+                    device=device,
+                    embeddings_path=w_emb_path,
+                )
+            w_graph_features = extract_graph_features(
+                games=w_games,
+                team_features=w_team_features,
+                embeddings_dict=w_emb_dict,
+                gender="w",
+                graph_winprob=w_graph_winprob,
+            )
+            w_graph_features = _encode_archetype_pair(w_graph_features)
+
+            if not m_graph_features.empty:
+                m_graph_features.to_csv(FEATURES_DIR / "graph_features_m.csv", index=False)
+            if not w_graph_features.empty:
+                w_graph_features.to_csv(FEATURES_DIR / "graph_features_w.csv", index=False)
+
+            print("[PHASE6] graph embedding completed successfully", flush=True)
+        except Exception as e:
+            print(f"[PHASE6] WARNING: graph embedding failed ({type(e).__name__}: {e}), continuing without graph features", flush=True)
+            traceback.print_exc()
+            m_graph_features = pd.DataFrame()
+            w_graph_features = pd.DataFrame()
+    else:
+        print("[PHASE6] skipped (NCAA_PHASE6_ENABLE=0)", flush=True)
+
     # Rolling CV + base models + stacking
     m_oof, m_fold_metrics, m_bins = _run_gender_pipeline(
         gender="m",
@@ -306,6 +533,7 @@ def main() -> None:
         tourney_compact=data["m_tourney"],
         team_features=m_team_features,
         include_extra_models=include_extra_models,
+        graph_features=m_graph_features,
     )
     w_oof, w_fold_metrics, w_bins = _run_gender_pipeline(
         gender="w",
@@ -313,6 +541,7 @@ def main() -> None:
         tourney_compact=data["w_tourney"],
         team_features=w_team_features,
         include_extra_models=include_extra_models,
+        graph_features=w_graph_features,
     )
 
     # Save evaluation outputs
@@ -321,13 +550,13 @@ def main() -> None:
 
     # Save evaluation outputs
     if not m_fold_metrics.empty:
-        m_fold_metrics.to_csv(EVAL_DIR / "fold_metrics_m.csv", index=False)
+        m_fold_metrics.to_csv(_eval_csv("fold_metrics_m"), index=False)
     if not w_fold_metrics.empty:
-        w_fold_metrics.to_csv(EVAL_DIR / "fold_metrics_w.csv", index=False)
+        w_fold_metrics.to_csv(_eval_csv("fold_metrics_w"), index=False)
     if not m_bins.empty:
-        m_bins.to_csv(EVAL_DIR / "calibration_bins_m.csv", index=False)
+        m_bins.to_csv(_eval_csv("calibration_bins_m"), index=False)
     if not w_bins.empty:
-        w_bins.to_csv(EVAL_DIR / "calibration_bins_w.csv", index=False)
+        w_bins.to_csv(_eval_csv("calibration_bins_w"), index=False)
 
     _write_submission_template(data["sub_stage2"])
 
@@ -337,7 +566,7 @@ def main() -> None:
     print(f"Women OOF rows: {len(w_oof):,}")
     print(f"OOF directory: {OOF_DIR}")
     print(f"Features directory: {FEATURES_DIR}")
-    print(f"Submission template: {SUBMISSIONS_DIR / 'submission_template.csv'}")
+    print(f"Submission template: {_submission_csv('submission_template')}")
 
     if not m_fold_metrics.empty:
         print("\nMen metrics (mean by model/regime):")

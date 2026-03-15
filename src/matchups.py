@@ -111,7 +111,17 @@ def add_structural_uncertainty_features(x: pd.DataFrame) -> pd.DataFrame:
 
 
 def feature_columns_for_training(df: pd.DataFrame) -> list[str]:
-    """Return usable training features with required families."""
-    keep_prefixes = ("T1_", "T2_", "Diff_", "Interact_", "Rating_")
-    cols = [c for c in df.columns if c.startswith(keep_prefixes)]
+    """Return usable training features with required families (including graph features)."""
+    keep_prefixes = (
+        "T1_",
+        "T2_",
+        "Diff_",
+        "Interact_",
+        "Rating_",
+        "Embed",
+        "Cluster",
+        "Neighbor",
+        "Archetype",
+    )
+    cols = [c for c in df.columns if any(c.startswith(p) for p in keep_prefixes) and c not in ["Season", "Team1", "Team2"]]
     return cols

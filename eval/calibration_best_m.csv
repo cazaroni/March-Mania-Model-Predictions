@@ -1,0 +1,4 @@
+gender,source_model,best_model_label,best_tournament_brier,best_oof_path
+m,logreg,logreg_cal_temperature_tournament_only_s04,0.18820172869445825,/lustre/home/luna/ncaa/actual_ncaa/March-Mania-Model-Predictions/oof/oof_logreg_cal_best_m.csv
+m,stack,stack_cal_temperature_tournament_only_s06,0.18982852527797014,/lustre/home/luna/ncaa/actual_ncaa/March-Mania-Model-Predictions/oof/oof_stack_cal_best_m.csv
+m,stack_tourney,stack_tourney_cal_temperature_tournament_only_s06,0.18982852527797014,/lustre/home/luna/ncaa/actual_ncaa/March-Mania-Model-Predictions/oof/oof_stack_tourney_cal_best_m.csv

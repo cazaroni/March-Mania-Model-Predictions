@@ -42,6 +42,10 @@ export NUMEXPR_NUM_THREADS=${SLURM_CPUS_PER_TASK}
 
 # Keep default run lightweight; set to 1 only when you explicitly want slower extra models
 export NCAA_ENABLE_EXTRA_MODELS=${NCAA_ENABLE_EXTRA_MODELS:-0}
+export NCAA_STACK_TOURNEY_WEIGHT=${NCAA_STACK_TOURNEY_WEIGHT:-1.0}
+export NCAA_CAL_METHODS=${NCAA_CAL_METHODS:-platt,temperature}
+export NCAA_CAL_SCOPES=${NCAA_CAL_SCOPES:-all,tournament_only}
+export NCAA_CAL_SHRINKS=${NCAA_CAL_SHRINKS:-0.0,0.02,0.04,0.06}
 
 # Run the training pipeline
 echo "Starting NCAA baseline pipeline..."
