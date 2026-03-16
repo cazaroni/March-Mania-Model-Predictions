@@ -154,10 +154,8 @@ def build_base_model_factories(*, include_extras: bool = False) -> Dict[str, Cal
         if XGB_AVAILABLE:
             from scipy.interpolate import UnivariateSpline  # noqa: F401
 
-            factories["xgb_margin"] = lambda: XGBMarginSplineModel(
-                spline_clip=25.0,
-                num_rounds=704,
-            )
+            factories["xgb_margin_m"] = lambda: XGBMarginSplineModel(gender="m")
+            factories["xgb_margin_w"] = lambda: XGBMarginSplineModel(gender="w")
     except Exception:
         pass
 

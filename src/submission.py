@@ -374,7 +374,7 @@ def _predict_with_base_model(
     model = factories[model_name]()
     train_target = "y_true"
     fit_df = train_df
-    if model_name == "xgb_margin" and "Margin" in train_df.columns:
+    if model_name in {"xgb_margin_m", "xgb_margin_w"} and "Margin" in train_df.columns:
         train_target = "Margin"
         if "IsTourney" in train_df.columns:
             fit_df = train_df[train_df["IsTourney"].astype(int) == 0].copy()

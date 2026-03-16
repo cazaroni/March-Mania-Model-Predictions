@@ -10,6 +10,8 @@ Architecture mirrors the 2025 Kaggle winner (mohammad odeh, Brier 0.10411).
 
 from __future__ import annotations
 
+import os
+
 import numpy as np
 import pandas as pd
 from sklearn.impute import SimpleImputer
@@ -23,31 +25,70 @@ except ImportError:
     XGB_AVAILABLE = False
 
 
+_BEST_PARAMS_M = {
+    "objective": "reg:squarederror",
+    "booster": "gbtree",
+    "eta": 0.005750,
+    "subsample": 0.557283,
+    "colsample_bynode": 0.8,
+    "num_parallel_tree": 2,
+    "min_child_weight": 4,
+    "max_depth": 3,
+    "tree_method": "hist",
+    "grow_policy": "lossguide",
+    "max_bin": 38,
+}
+
+_BEST_PARAMS_W = {
+    "objective": "reg:squarederror",
+    "booster": "gbtree",
+    "eta": 0.019593,
+    "subsample": 0.788090,
+    "colsample_bynode": 0.8,
+    "num_parallel_tree": 2,
+    "min_child_weight": 4,
+    "max_depth": 3,
+    "tree_method": "hist",
+    "grow_policy": "lossguide",
+    "max_bin": 38,
+}
+
+_BEST_ROUNDS_M = 1012
+_BEST_ROUNDS_W = 1011
+
+
 class XGBMarginSplineModel:
-    def __init__(self, spline_clip: float = 25.0, num_rounds: int = 704, **xgb_params):
+    def __init__(
+        self,
+        gender: str = "m",
+        spline_clip: float = 25.0,
+        num_rounds: int | None = None,
+        **xgb_params,
+    ):
         if not XGB_AVAILABLE:
             raise ImportError(
                 "XGBMarginSplineModel requires xgboost and scipy. Install both to enable xgb_margin."
             )
 
-        default_xgb_params = {
-            "objective": "reg:squarederror",
-            "booster": "gbtree",
-            "eta": 0.0093,
-            "subsample": 0.6,
-            "colsample_bynode": 0.8,
-            "num_parallel_tree": 2,
-            "min_child_weight": 4,
-            "max_depth": 4,
-            "tree_method": "hist",
-            "grow_policy": "lossguide",
-            "max_bin": 38,
-        }
-        default_xgb_params.update(xgb_params)
+        gender_key = gender.lower()
+        base = _BEST_PARAMS_M.copy() if gender_key == "m" else _BEST_PARAMS_W.copy()
+        base.update(xgb_params)
 
+        self.xgb_params = base
+        self.num_rounds = num_rounds if num_rounds is not None else (
+            _BEST_ROUNDS_M if gender_key == "m" else _BEST_ROUNDS_W
+        )
         self.spline_clip = float(spline_clip)
-        self.num_rounds = int(num_rounds)
-        self.xgb_params = default_xgb_params
+        self.imputer_ = None
+        self.xgb_model_ = None
+        self.spline_ = None
+
+        if os.environ.get("NCAA_XGB_ETA"):
+            self.xgb_params["eta"] = float(os.environ["NCAA_XGB_ETA"])
+        if os.environ.get("NCAA_XGB_MAX_DEPTH"):
+            self.xgb_params["max_depth"] = int(os.environ["NCAA_XGB_MAX_DEPTH"])
+        if os.environ.get("NCAA_XGB_NUM_ROUNDS"):
+            self.num_rounds = int(os.environ["NCAA_XGB_NUM_ROUNDS"])
 
     def fit(self, x: pd.DataFrame, y: pd.Series):
         y_margin = pd.Series(y).astype(float).to_numpy()

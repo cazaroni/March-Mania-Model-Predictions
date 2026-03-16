@@ -1,7 +1,7 @@
 """End-to-end reproducible NCAA modeling pipeline (phases 0-5)."""
 
 # EXPERIMENTAL PIPELINE
-# Tests XGBoost margin regression (xgb_margin) as an additional base model.
+# Tests XGBoost margin regression (xgb_margin_m/xgb_margin_w) as additional base models.
 # Compares tournament-only Brier vs main pipeline to validate the approach.
 # Reference: 2025 Kaggle winner (mohammad odeh) scored 0.10411 using this method.
 # Do not merge into main pipeline until OOF ablation confirms improvement.
@@ -275,8 +275,9 @@ def _run_gender_pipeline(
     prior_meta_cols = [c for c in prior_meta_candidates if c in train_df.columns]
 
     factories = build_base_model_factories(include_extras=include_extra_models)
-    if not enable_margin_model and "xgb_margin" in factories:
-        factories.pop("xgb_margin", None)
+    if not enable_margin_model:
+        factories.pop("xgb_margin_m", None)
+        factories.pop("xgb_margin_w", None)
     base_oof_parts = []
     fold_metrics_parts = []
     bin_parts = []
@@ -284,7 +285,7 @@ def _run_gender_pipeline(
     for model_name, factory in factories.items():
         model_start = time.perf_counter()
         print(f"[PIPELINE] gender={gender.upper()} model={model_name} starting", flush=True)
-        train_target = "Margin" if model_name == "xgb_margin" else None
+        train_target = "Margin" if model_name in {"xgb_margin_m", "xgb_margin_w"} else None
         cv_res = run_rolling_cv(
             train_df,
             feature_cols=feature_cols,
@@ -503,7 +504,7 @@ def main() -> None:
         "y",
     }
     if not enable_margin_model:
-        print("[EXPERIMENTAL] xgb_margin disabled via NCAA_EXPERIMENTAL_MARGIN_MODEL=0", flush=True)
+        print("[EXPERIMENTAL] xgb_margin_m/xgb_margin_w disabled via NCAA_EXPERIMENTAL_MARGIN_MODEL=0", flush=True)
     phase6_enabled = os.environ.get("NCAA_PHASE6_ENABLE", "1").strip().lower() in {"1", "true", "yes", "y"}
     gender_filter = os.environ.get("NCAA_GENDER_FILTER", "both").strip().lower()
     if gender_filter not in {"both", "m", "w"}:
@@ -794,7 +795,7 @@ def main() -> None:
     print("Compare these numbers against main pipeline baselines:")
     print("  Men baseline:   stack=0.188289, logreg=0.188304")
     print("  Women baseline: logreg=0.144123, stack=0.145160")
-    print("Look for xgb_margin in tournament_only regime above.")
+    print("Look for xgb_margin_m/xgb_margin_w in tournament_only regime above.")
 
 
 if __name__ == "__main__":

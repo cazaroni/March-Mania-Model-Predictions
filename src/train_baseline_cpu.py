@@ -275,7 +275,7 @@ def _run_gender_pipeline(
     for model_name, factory in factories.items():
         model_start = time.perf_counter()
         print(f"[PIPELINE] gender={gender.upper()} model={model_name} starting", flush=True)
-        train_target = "Margin" if model_name == "xgb_margin" else None
+        train_target = "Margin" if model_name in {"xgb_margin_m", "xgb_margin_w"} else None
         cv_res = run_rolling_cv(
             train_df,
             feature_cols=feature_cols,
@@ -485,7 +485,7 @@ def _run_calibration_phase(
 def main() -> None:
     _ensure_dirs()
     data = load_data(DATA_DIR)
-    # xgb_margin is part of extras; SLURM launchers default NCAA_ENABLE_EXTRA_MODELS=1.
+    # xgb_margin_m/xgb_margin_w are part of extras; SLURM launchers default NCAA_ENABLE_EXTRA_MODELS=1.
     include_extra_models = os.environ.get("NCAA_ENABLE_EXTRA_MODELS", "0").strip().lower() in {"1", "true", "yes", "y"}
     phase6_enabled = os.environ.get("NCAA_PHASE6_ENABLE", "1").strip().lower() in {"1", "true", "yes", "y"}
     gender_filter = os.environ.get("NCAA_GENDER_FILTER", "both").strip().lower()

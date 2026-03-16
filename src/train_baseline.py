@@ -275,14 +275,16 @@ def _run_gender_pipeline(
     for model_name, factory in factories.items():
         model_start = time.perf_counter()
         print(f"[PIPELINE] gender={gender.upper()} model={model_name} starting", flush=True)
+        train_target = "Margin" if model_name in {"xgb_margin_m", "xgb_margin_w"} else None
         cv_res = run_rolling_cv(
             train_df,
             feature_cols=feature_cols,
             model_name=model_name,
             model_factory=factory,
+            train_target_col=train_target,
             season_col="Season",
             y_col="y_true",
-            meta_cols=["Season", "GameRowID", "Team1", "Team2", "IsTourney", *prior_meta_cols],
+            meta_cols=["Season", "GameRowID", "Team1", "Team2", "IsTourney", "Margin", *prior_meta_cols],
             progress_label=f"{gender.upper()}:{model_name}",
             progress=True,
         )
