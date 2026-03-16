@@ -1,4 +1,4 @@
-"""Phase 7: Temporal sequence embeddings (LSTM/GRU) for NCAA team-season trajectories."""
+"""Phase 7: Temporal sequence embeddings (GRU) for NCAA team-season trajectories."""
 
 from __future__ import annotations
 
@@ -200,41 +200,21 @@ class _SeasonBatch:
 class _TemporalNet(nn.Module):
     def __init__(self, model_type: str, input_dim: int, hidden_dim: int, num_layers: int = 1) -> None:
         super().__init__()
-        model_type = model_type.lower()
-        if model_type == "lstm":
-            dropout = 0.2 if num_layers > 1 else 0.0
-            self.rnn = nn.LSTM(
-                input_size=input_dim,
-                hidden_size=hidden_dim,
-                num_layers=num_layers,
-                dropout=dropout,
-                batch_first=True,
-                bidirectional=False,
-            )
-            self._is_lstm = True
-        elif model_type == "gru":
-            self.rnn = nn.GRU(
-                input_size=input_dim,
-                hidden_size=hidden_dim,
-                num_layers=num_layers,
-                dropout=0.0,
-                batch_first=True,
-                bidirectional=False,
-            )
-            self._is_lstm = False
-        else:
+        if model_type.lower() != "gru":
             raise ValueError(f"Unknown model_type={model_type}")
-
+        self.rnn = nn.GRU(
+            input_size=input_dim,
+            hidden_size=hidden_dim,
+            num_layers=num_layers,
+            dropout=0.0,
+            batch_first=True,
+            bidirectional=False,
+        )
         self.head = nn.Linear(hidden_dim, 1)
 
     def forward(self, x: torch.Tensor, lengths: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         packed = pack_padded_sequence(x, lengths.cpu(), batch_first=True, enforce_sorted=False)
-        _, h_state = self.rnn(packed)
-
-        if self._is_lstm:
-            h_n = h_state[0]
-        else:
-            h_n = h_state
+        _, h_n = self.rnn(packed)
         final_hidden = h_n[-1]
         logits = self.head(final_hidden).squeeze(-1)
         return logits, final_hidden
@@ -311,8 +291,8 @@ def train_temporal_model(
     device: str = "cpu",
 ) -> dict[tuple[int, int], np.ndarray]:
     """Returns {(Season, TeamID): embedding array of shape (hidden_dim,)}."""
-    if model_type.lower() not in {"lstm", "gru"}:
-        raise ValueError("model_type must be 'lstm' or 'gru'")
+    if model_type.lower() != "gru":
+        raise ValueError("model_type must be 'gru'")
 
     season_batches, zero_emb = _build_training_batches(sequences, games)
     embeddings: dict[tuple[int, int], np.ndarray] = {
@@ -390,21 +370,21 @@ def _pair_features(z1: np.ndarray, z2: np.ndarray, prefix: str) -> dict[str, flo
     }
 
 
+# NOTE: if NCAA_PHASE7_RETRAIN=0 and cached temporal_features_*.csv exists,
+# verify it does NOT contain LSTM_* columns. If it does, set NCAA_PHASE7_RETRAIN=1
+# to regenerate with GRU-only features.
 def extract_temporal_features(
     games: pd.DataFrame,
-    lstm_embeddings: dict,
     gru_embeddings: dict,
 ) -> pd.DataFrame:
-    """Returns matchup-level DataFrame with LSTM_* and GRU_* columns."""
+    """Returns matchup-level DataFrame with GRU_* columns."""
     out_rows: list[dict[str, float | int]] = []
 
     hidden_dim = 64
-    for emb_dict in (lstm_embeddings, gru_embeddings):
-        if emb_dict:
-            first = next(iter(emb_dict.values()))
-            if isinstance(first, np.ndarray) and first.ndim == 1 and first.size > 0:
-                hidden_dim = int(first.size)
-                break
+    if gru_embeddings:
+        first = next(iter(gru_embeddings.values()))
+        if isinstance(first, np.ndarray) and first.ndim == 1 and first.size > 0:
+            hidden_dim = int(first.size)
 
     z0 = np.zeros(hidden_dim, dtype=np.float32)
 
@@ -416,8 +396,6 @@ def extract_temporal_features(
         k1 = (season, team1)
         k2 = (season, team2)
 
-        l1 = lstm_embeddings.get(k1, z0)
-        l2 = lstm_embeddings.get(k2, z0)
         g1 = gru_embeddings.get(k1, z0)
         g2 = gru_embeddings.get(k2, z0)
 
@@ -426,7 +404,6 @@ def extract_temporal_features(
             "Team1": team1,
             "Team2": team2,
         }
-        feat.update(_pair_features(np.asarray(l1, dtype=np.float32), np.asarray(l2, dtype=np.float32), "LSTM"))
         feat.update(_pair_features(np.asarray(g1, dtype=np.float32), np.asarray(g2, dtype=np.float32), "GRU"))
         out_rows.append(feat)
 

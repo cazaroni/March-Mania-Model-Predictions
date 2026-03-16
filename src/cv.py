@@ -48,6 +48,7 @@ def run_rolling_cv(
     predict_fn: PredictFn | None = None,
     season_col: str = "Season",
     y_col: str = "y_true",
+    train_target_col: str | None = None,
     meta_cols: list[str] | None = None,
     progress_label: str | None = None,
     progress: bool = True,
@@ -56,7 +57,8 @@ def run_rolling_cv(
     if predict_fn is None:
         predict_fn = default_predict_fn
     if meta_cols is None:
-        meta_cols = ["Season", "Team1", "Team2", "IsTourney"]
+        meta_cols = ["Season", "Team1", "Team2", "IsTourney", "Margin"]
+    available_meta = [c for c in meta_cols if c in data.columns]
 
     season_values = data[season_col].astype(int)
     seasons = rolling_validation_seasons(season_values)
@@ -87,10 +89,20 @@ def run_rolling_cv(
             continue
 
         model = model_factory()
-        model.fit(train_df[feature_cols], train_df[y_col].astype(int))
+        if train_target_col and train_target_col in train_df.columns:
+            margin_train_mask = train_df["IsTourney"] == 0 if "IsTourney" in train_df.columns else pd.Series(True, index=train_df.index)
+            fit_df = train_df.loc[margin_train_mask].copy()
+            # Fallback to all training rows if a fold has no regular-season rows.
+            if fit_df.empty:
+                fit_df = train_df
+            fit_target_col = train_target_col
+        else:
+            fit_df = train_df
+            fit_target_col = y_col
+        model.fit(fit_df[feature_cols], fit_df[fit_target_col])
 
         pred = predict_fn(model, valid_df[feature_cols])
-        fold_oof = valid_df[meta_cols + [y_col]].copy()
+        fold_oof = valid_df[available_meta + [y_col]].copy()
         fold_oof["pred"] = np.clip(pred, 1e-6, 1 - 1e-6)
         fold_oof["model"] = model_name
         fold_oof["valid_season"] = int(valid_season)

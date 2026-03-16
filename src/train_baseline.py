@@ -117,25 +117,25 @@ def _encode_archetype_pair(graph_features: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def _validate_lstm_conference_structure(
+def _validate_gru_conference_structure(
     embeddings: dict[tuple[int, int], np.ndarray],
     team_conf: pd.DataFrame,
     gender: str,
 ) -> None:
     if not embeddings or team_conf.empty:
-        print(f"[PHASE7] LSTM validation skipped for gender={gender.upper()} (missing embeddings or conferences)", flush=True)
+        print(f"[PHASE7] GRU validation skipped for gender={gender.upper()} (missing embeddings or conferences)", flush=True)
         return
 
     seasons = sorted({k[0] for k in embeddings.keys()})
     if not seasons:
-        print(f"[PHASE7] LSTM validation skipped for gender={gender.upper()} (no seasons)", flush=True)
+        print(f"[PHASE7] GRU validation skipped for gender={gender.upper()} (no seasons)", flush=True)
         return
     season = int(seasons[-1])
 
     conf_cols = [c for c in ["Season", "TeamID", "ConfAbbrev", "DayNum"] if c in team_conf.columns]
     conf = team_conf[conf_cols].copy()
     if "ConfAbbrev" not in conf.columns:
-        print(f"[PHASE7] LSTM validation skipped for gender={gender.upper()} (ConfAbbrev missing)", flush=True)
+        print(f"[PHASE7] GRU validation skipped for gender={gender.upper()} (ConfAbbrev missing)", flush=True)
         return
 
     if "DayNum" in conf.columns:
@@ -158,7 +158,7 @@ def _validate_lstm_conference_structure(
         rows.append((int(row.TeamID), str(row.ConfAbbrev), z))
 
     if len(rows) < 4:
-        print(f"[PHASE7] LSTM validation skipped for gender={gender.upper()} (insufficient teams)", flush=True)
+        print(f"[PHASE7] GRU validation skipped for gender={gender.upper()} (insufficient teams)", flush=True)
         return
 
     confs = np.asarray([r[1] for r in rows])
@@ -176,7 +176,7 @@ def _validate_lstm_conference_structure(
     cross_mean = float(pair_cos[cross_mask].mean()) if np.any(cross_mask) else float("nan")
 
     print(
-        f"[PHASE7] LSTM validation - same-conf similarity: {same_mean:.4f}, cross-conf similarity: {cross_mean:.4f}",
+        f"[PHASE7] GRU validation - same-conf similarity: {same_mean:.4f}, cross-conf similarity: {cross_mean:.4f}",
         flush=True,
     )
     if np.isfinite(same_mean) and np.isfinite(cross_mean) and not (same_mean > cross_mean):
@@ -234,7 +234,7 @@ def _run_gender_pipeline(
     if temporal_features is not None and not temporal_features.empty:
         merge_keys = ["Season", "Team1", "Team2"]
         tf = temporal_features.copy()
-        temporal_cols = [c for c in tf.columns if c.startswith(("LSTM_", "GRU_"))]
+        temporal_cols = [c for c in tf.columns if c.startswith("GRU_")]
 
         if tf.duplicated(subset=merge_keys).any():
             numeric_cols = [c for c in temporal_cols if pd.api.types.is_numeric_dtype(tf[c])]
@@ -248,10 +248,10 @@ def _run_gender_pipeline(
                 f"Temporal feature merge changed row count for gender={gender}: {pre_rows} -> {post_rows}."
             )
 
-        temporal_cols = [c for c in train_df.columns if c.startswith(("LSTM_", "GRU_"))]
+        temporal_cols = [c for c in train_df.columns if c.startswith("GRU_")]
         if temporal_cols:
             train_df[temporal_cols] = train_df[temporal_cols].fillna(0.0)
-        print(f"[PIPELINE] gender={gender.upper()} integrated {len(temporal_cols)} temporal features", flush=True)
+        print(f"[PHASE7] gender={gender.upper()} integrated {len(temporal_cols)} temporal features (GRU only)", flush=True)
     
     # Preserve one-row-per-game identity for stack pivoting.
     train_df["GameRowID"] = np.arange(len(train_df), dtype=np.int64)
@@ -616,7 +616,7 @@ def main() -> None:
     else:
         print("[PHASE6] skipped (NCAA_PHASE6_ENABLE=0)", flush=True)
 
-    # Phase 7: Temporal embeddings (LSTM + GRU)
+    # Phase 7: Temporal embeddings (GRU only)
     print("[PHASE7] starting temporal embedding phase...", flush=True)
     m_temporal_features = pd.DataFrame()
     w_temporal_features = pd.DataFrame()
@@ -630,7 +630,6 @@ def main() -> None:
 
         phase7_retrain = os.environ.get("NCAA_PHASE7_RETRAIN", "1").strip().lower() in {"1", "true", "yes", "y"}
         phase7_hidden = int(os.environ.get("NCAA_PHASE7_HIDDEN_DIM", "64"))
-        phase7_lstm_epochs = int(os.environ.get("NCAA_PHASE7_LSTM_EPOCHS", "20"))
         phase7_gru_epochs = int(os.environ.get("NCAA_PHASE7_GRU_EPOCHS", "20"))
         device = "cuda" if __import__("torch").cuda.is_available() else "cpu"
 
@@ -642,15 +641,6 @@ def main() -> None:
             m_temporal_features = pd.read_csv(m_temporal_path)
         else:
             m_sequences = build_game_sequences(data["m_reg_det"], gender="m")
-            m_lstm_emb = train_temporal_model(
-                sequences=m_sequences,
-                games=data["m_reg_det"],
-                model_type="lstm",
-                hidden_dim=phase7_hidden,
-                epochs=phase7_lstm_epochs,
-                lr=1e-3,
-                device=device,
-            )
             m_gru_emb = train_temporal_model(
                 sequences=m_sequences,
                 games=data["m_reg_det"],
@@ -660,24 +650,15 @@ def main() -> None:
                 lr=1e-3,
                 device=device,
             )
-            _validate_lstm_conference_structure(m_lstm_emb, data["m_team_conf"], gender="m")
+            _validate_gru_conference_structure(m_gru_emb, data["m_team_conf"], gender="m")
             m_games_all = build_game_training_rows(data["m_reg"], data["m_tourney"])
-            m_temporal_features = extract_temporal_features(m_games_all, m_lstm_emb, m_gru_emb)
+            m_temporal_features = extract_temporal_features(m_games_all, m_gru_emb)
 
         if (not phase7_retrain) and w_temporal_path.exists():
             print(f"[PHASE7] loading cached temporal features from {w_temporal_path}", flush=True)
             w_temporal_features = pd.read_csv(w_temporal_path)
         else:
             w_sequences = build_game_sequences(data["w_reg_det"], gender="w")
-            w_lstm_emb = train_temporal_model(
-                sequences=w_sequences,
-                games=data["w_reg_det"],
-                model_type="lstm",
-                hidden_dim=phase7_hidden,
-                epochs=phase7_lstm_epochs,
-                lr=1e-3,
-                device=device,
-            )
             w_gru_emb = train_temporal_model(
                 sequences=w_sequences,
                 games=data["w_reg_det"],
@@ -687,9 +668,9 @@ def main() -> None:
                 lr=1e-3,
                 device=device,
             )
-            _validate_lstm_conference_structure(w_lstm_emb, data["w_team_conf"], gender="w")
+            _validate_gru_conference_structure(w_gru_emb, data["w_team_conf"], gender="w")
             w_games_all = build_game_training_rows(data["w_reg"], data["w_tourney"])
-            w_temporal_features = extract_temporal_features(w_games_all, w_lstm_emb, w_gru_emb)
+            w_temporal_features = extract_temporal_features(w_games_all, w_gru_emb)
 
         m_temporal_features.to_csv(m_temporal_path, index=False)
         w_temporal_features.to_csv(w_temporal_path, index=False)

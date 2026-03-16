@@ -21,17 +21,27 @@ def build_game_training_rows(
     reg_compact: pd.DataFrame,
     tourney_compact: pd.DataFrame,
 ) -> pd.DataFrame:
-    """Combine regular + tournament results into one training frame."""
-    reg = canonical_matchup(reg_compact[["Season", "DayNum", "WTeamID", "LTeamID"]], "WTeamID", "LTeamID")
-    reg["IsTourney"] = 0
+    """Combine regular + tournament results into one training frame.
 
-    trn = canonical_matchup(tourney_compact[["Season", "DayNum", "WTeamID", "LTeamID"]], "WTeamID", "LTeamID")
-    trn["IsTourney"] = 1
+    Adds signed Margin column: positive means Team1 won, negative means Team2 won.
+    Team1 is always the lower TeamID per canonical_matchup convention.
+    """
 
-    return pd.concat(
-        [reg[["Season", "Team1", "Team2", "y_true", "IsTourney"]], trn[["Season", "Team1", "Team2", "y_true", "IsTourney"]]],
-        ignore_index=True,
-    )
+    def _canonical_with_margin(df: pd.DataFrame, is_tourney: int) -> pd.DataFrame:
+        out = canonical_matchup(
+            df[["Season", "DayNum", "WTeamID", "LTeamID", "WScore", "LScore"]],
+            "WTeamID",
+            "LTeamID",
+        )
+        out["IsTourney"] = is_tourney
+        raw_margin = out["WScore"].astype(float) - out["LScore"].astype(float)
+        # Sign margin from Team1's perspective (Team1 = lower TeamID).
+        out["Margin"] = np.where(out["y_true"] == 1, raw_margin, -raw_margin)
+        return out[["Season", "Team1", "Team2", "y_true", "Margin", "IsTourney"]]
+
+    reg = _canonical_with_margin(reg_compact, 0)
+    trn = _canonical_with_margin(tourney_compact, 1)
+    return pd.concat([reg, trn], ignore_index=True)
 
 
 def _all_numeric_feature_cols(team_features: pd.DataFrame) -> list[str]:

@@ -1,7 +1,7 @@
 #!/bin/bash
-#SBATCH --job-name=ncaa-pipeline-phase6-cpu
-#SBATCH --output=logs/ncaa_pipeline_phase6_cpu_%A_%a.log
-#SBATCH --error=logs/ncaa_pipeline_phase6_cpu_%A_%a.err
+#SBATCH --job-name=ncaa-pipeline-experimental
+#SBATCH --output=logs/ncaa_pipeline_experimental_%A_%a.log
+#SBATCH --error=logs/ncaa_pipeline_experimental_%A_%a.err
 #SBATCH --time=14:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
@@ -58,6 +58,7 @@ export NCAA_CAL_METHODS="${NCAA_CAL_METHODS:-platt,temperature}"
 export NCAA_CAL_SCOPES="${NCAA_CAL_SCOPES:-all,tournament_only}"
 export NCAA_CAL_SHRINKS="${NCAA_CAL_SHRINKS:-0.0,0.02,0.04,0.06}"
 export NCAA_OUTPUT_SUFFIX="${NCAA_OUTPUT_SUFFIX:-}"
+export NCAA_EXPERIMENTAL_MARGIN_MODEL="${NCAA_EXPERIMENTAL_MARGIN_MODEL:-1}"
 
 # Phase 6 settings
 export NCAA_PHASE6_ENABLE="${NCAA_PHASE6_ENABLE:-1}"
@@ -67,12 +68,13 @@ export NCAA_PHASE6_EPOCHS="${NCAA_PHASE6_EPOCHS:-30}"
 export NCAA_PHASE6_LR="${NCAA_PHASE6_LR:-0.001}"
 export NCAA_PHASE6_INCLUDE_TOURNEY_EDGES="${NCAA_PHASE6_INCLUDE_TOURNEY_EDGES:-0}"
 export NCAA_PHASE6_USE_GRAPH_WINPROB="${NCAA_PHASE6_USE_GRAPH_WINPROB:-0}"
+export NCAA_PHASE6_RETRAIN="${NCAA_PHASE6_RETRAIN:-0}"
 
 # Phase 7 settings
 export NCAA_PHASE7_ENABLE="${NCAA_PHASE7_ENABLE:-1}"
 export NCAA_PHASE7_HIDDEN_DIM="${NCAA_PHASE7_HIDDEN_DIM:-64}"
 export NCAA_PHASE7_GRU_EPOCHS="${NCAA_PHASE7_GRU_EPOCHS:-20}"
-export NCAA_PHASE7_RETRAIN="${NCAA_PHASE7_RETRAIN:-1}"
+export NCAA_PHASE7_RETRAIN="${NCAA_PHASE7_RETRAIN:-0}"
 
 # Optional split mode for two-node parallel CPU runs:
 # - Submit with: sbatch --array=0-1 run_pipeline_phase6_cpu.slurm
@@ -96,6 +98,7 @@ echo "  NCAA_CAL_METHODS=$NCAA_CAL_METHODS"
 echo "  NCAA_CAL_SCOPES=$NCAA_CAL_SCOPES"
 echo "  NCAA_CAL_SHRINKS=$NCAA_CAL_SHRINKS"
 echo "  NCAA_OUTPUT_SUFFIX=$NCAA_OUTPUT_SUFFIX"
+echo "  NCAA_EXPERIMENTAL_MARGIN_MODEL=$NCAA_EXPERIMENTAL_MARGIN_MODEL"
 echo "  NCAA_PHASE6_ENABLE=$NCAA_PHASE6_ENABLE"
 echo "  NCAA_PHASE6_EMBEDDING_DIM=$NCAA_PHASE6_EMBEDDING_DIM"
 echo "  NCAA_PHASE6_GNN_LAYERS=$NCAA_PHASE6_GNN_LAYERS"
@@ -103,24 +106,27 @@ echo "  NCAA_PHASE6_EPOCHS=$NCAA_PHASE6_EPOCHS"
 echo "  NCAA_PHASE6_LR=$NCAA_PHASE6_LR"
 echo "  NCAA_PHASE6_INCLUDE_TOURNEY_EDGES=$NCAA_PHASE6_INCLUDE_TOURNEY_EDGES"
 echo "  NCAA_PHASE6_USE_GRAPH_WINPROB=$NCAA_PHASE6_USE_GRAPH_WINPROB"
+echo "  NCAA_PHASE6_RETRAIN=$NCAA_PHASE6_RETRAIN"
 echo "  NCAA_PHASE7_ENABLE=$NCAA_PHASE7_ENABLE"
 echo "  NCAA_PHASE7_HIDDEN_DIM=$NCAA_PHASE7_HIDDEN_DIM"
 echo "  NCAA_PHASE7_GRU_EPOCHS=$NCAA_PHASE7_GRU_EPOCHS"
 echo "  NCAA_PHASE7_RETRAIN=$NCAA_PHASE7_RETRAIN"
 echo ""
 
-echo "Starting NCAA Phase 0-6 pipeline (CPU mode, R-GCN embeddings and SSL)..."
-python src/train_baseline_cpu.py
+echo "Starting NCAA EXPERIMENTAL pipeline (margin regression test)..."
+python src/train_experimental.py
 
 echo ""
 echo "Pipeline completed successfully!"
 echo "Outputs saved to:"
-echo "  - features/team_ratings_m.parquet"
-echo "  - features/team_ratings_w.parquet"
-echo "  - features/graph_features_m.csv"
-echo "  - features/graph_features_w.csv"
-echo "  - oof/ (base, stack, and calibrated OOF predictions)"
-echo "  - eval/ (fold metrics + calibration bins)"
-echo "  - submissions/submission_template.csv"
+echo "  - features/team_ratings_m.parquet (read-only baseline input)"
+echo "  - features/team_ratings_w.parquet (read-only baseline input)"
+echo "  - features_exp/graph_features_m.csv"
+echo "  - features_exp/graph_features_w.csv"
+echo "  - features_exp/temporal_features_m.csv"
+echo "  - features_exp/temporal_features_w.csv"
+echo "  - oof/*_exp*.csv (base, stack, and calibrated OOF predictions)"
+echo "  - eval_exp/ (fold metrics + calibration bins)"
+echo "  - submissions/submission_template_exp*.csv"
 echo ""
 echo "Job completed at $(date)"

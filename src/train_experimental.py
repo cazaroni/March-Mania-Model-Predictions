@@ -1,5 +1,11 @@
 """End-to-end reproducible NCAA modeling pipeline (phases 0-5)."""
 
+# EXPERIMENTAL PIPELINE
+# Tests XGBoost margin regression (xgb_margin) as an additional base model.
+# Compares tournament-only Brier vs main pipeline to validate the approach.
+# Reference: 2025 Kaggle winner (mohammad odeh) scored 0.10411 using this method.
+# Do not merge into main pipeline until OOF ablation confirms improvement.
+
 from __future__ import annotations
 
 import os
@@ -16,16 +22,16 @@ from eval import evaluate_by_regime
 from features_baseline import build_basic_team_features, load_data
 from matchups import build_game_training_rows, build_matchup_matrix, feature_columns_for_training
 from models import build_base_model_factories
-from ratings import build_and_save_ratings
 from stack import build_stack_features, rolling_stack_oof
 
 
 ROOT = Path(__file__).resolve().parents[1]
+EXP_SUFFIX = "_exp"
 DATA_DIR = ROOT / "data"
-FEATURES_DIR = ROOT / "features"
+FEATURES_DIR = ROOT / "features_exp"
 OOF_DIR = ROOT / "oof"
 SUBMISSIONS_DIR = ROOT / "submissions"
-EVAL_DIR = ROOT / "eval"
+EVAL_DIR = ROOT / "eval_exp"
 
 
 def _ensure_dirs() -> None:
@@ -41,7 +47,7 @@ def _output_suffix() -> str:
 
 
 def _oof_csv(stem: str) -> Path:
-    return OOF_DIR / f"{stem}{_output_suffix()}.csv"
+    return OOF_DIR / f"{stem}_exp{_output_suffix()}.csv"
 
 
 def _eval_csv(stem: str) -> Path:
@@ -49,7 +55,7 @@ def _eval_csv(stem: str) -> Path:
 
 
 def _submission_csv(stem: str) -> Path:
-    return SUBMISSIONS_DIR / f"{stem}{_output_suffix()}.csv"
+    return SUBMISSIONS_DIR / f"{stem}{EXP_SUFFIX}{_output_suffix()}.csv"
 
 
 def _combine_team_features(basic: pd.DataFrame, ratings: pd.DataFrame) -> pd.DataFrame:
@@ -190,6 +196,7 @@ def _run_gender_pipeline(
     tourney_compact: pd.DataFrame,
     team_features: pd.DataFrame,
     include_extra_models: bool = False,
+    enable_margin_model: bool = True,
     graph_features: pd.DataFrame | None = None,
     temporal_features: pd.DataFrame | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
@@ -268,6 +275,8 @@ def _run_gender_pipeline(
     prior_meta_cols = [c for c in prior_meta_candidates if c in train_df.columns]
 
     factories = build_base_model_factories(include_extras=include_extra_models)
+    if not enable_margin_model and "xgb_margin" in factories:
+        factories.pop("xgb_margin", None)
     base_oof_parts = []
     fold_metrics_parts = []
     bin_parts = []
@@ -310,7 +319,8 @@ def _run_gender_pipeline(
             if "IsTourney" in base_df.columns:
                 out_cols.insert(5, "IsTourney")
             out_cols.extend([c for c in prior_meta_cols if c in base_df.columns])
-            base_df[out_cols].to_csv(_oof_csv(f"oof_{str(base_name).lower()}_{gender.lower()}"), index=False)
+            oof_filename = f"oof_{str(base_name).lower()}_{gender.lower()}_exp.csv"
+            base_df[out_cols].to_csv(OOF_DIR / oof_filename, index=False)
 
     if not base_oof.empty:
         stack_tourney_weight = float(os.environ.get("NCAA_STACK_TOURNEY_WEIGHT", "4.0"))
@@ -485,8 +495,15 @@ def _run_calibration_phase(
 def main() -> None:
     _ensure_dirs()
     data = load_data(DATA_DIR)
-    # xgb_margin is part of extras; SLURM launchers default NCAA_ENABLE_EXTRA_MODELS=1.
     include_extra_models = os.environ.get("NCAA_ENABLE_EXTRA_MODELS", "0").strip().lower() in {"1", "true", "yes", "y"}
+    enable_margin_model = os.environ.get("NCAA_EXPERIMENTAL_MARGIN_MODEL", "1").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "y",
+    }
+    if not enable_margin_model:
+        print("[EXPERIMENTAL] xgb_margin disabled via NCAA_EXPERIMENTAL_MARGIN_MODEL=0", flush=True)
     phase6_enabled = os.environ.get("NCAA_PHASE6_ENABLE", "1").strip().lower() in {"1", "true", "yes", "y"}
     gender_filter = os.environ.get("NCAA_GENDER_FILTER", "both").strip().lower()
     if gender_filter not in {"both", "m", "w"}:
@@ -499,26 +516,23 @@ def main() -> None:
     # Ratings layer (Phase 2)
     m_ratings = pd.DataFrame()
     w_ratings = pd.DataFrame()
+    main_features_dir = ROOT / "features"
     if run_m:
-        m_ratings = build_and_save_ratings(
-            DATA_DIR,
-            FEATURES_DIR,
-            reg_compact_file="MRegularSeasonCompactResults.csv",
-            reg_detailed_file="MRegularSeasonDetailedResults.csv",
-            team_conf_file="MTeamConferences.csv",
-            output_file="team_ratings_m.parquet",
-            massey_file="MMasseyOrdinals.csv",
-        )
+        m_ratings_path = main_features_dir / "team_ratings_m.parquet"
+        if not m_ratings_path.exists():
+            raise FileNotFoundError(
+                f"Required baseline ratings file is missing: {m_ratings_path}. "
+                "Run the main pipeline first to generate ratings."
+            )
+        m_ratings = pd.read_parquet(m_ratings_path)
     if run_w:
-        w_ratings = build_and_save_ratings(
-            DATA_DIR,
-            FEATURES_DIR,
-            reg_compact_file="WRegularSeasonCompactResults.csv",
-            reg_detailed_file="WRegularSeasonDetailedResults.csv",
-            team_conf_file="WTeamConferences.csv",
-            output_file="team_ratings_w.parquet",
-            massey_file=None,
-        )
+        w_ratings_path = main_features_dir / "team_ratings_w.parquet"
+        if not w_ratings_path.exists():
+            raise FileNotFoundError(
+                f"Required baseline ratings file is missing: {w_ratings_path}. "
+                "Run the main pipeline first to generate ratings."
+            )
+        w_ratings = pd.read_parquet(w_ratings_path)
 
     # Baseline team features + ratings
     m_team_features = pd.DataFrame()
@@ -724,6 +738,7 @@ def main() -> None:
             tourney_compact=data["m_tourney"],
             team_features=m_team_features,
             include_extra_models=include_extra_models,
+            enable_margin_model=enable_margin_model,
             graph_features=m_graph_features,
             temporal_features=m_temporal_features,
         )
@@ -734,6 +749,7 @@ def main() -> None:
             tourney_compact=data["w_tourney"],
             team_features=w_team_features,
             include_extra_models=include_extra_models,
+            enable_margin_model=enable_margin_model,
             graph_features=w_graph_features,
             temporal_features=w_temporal_features,
         )
@@ -773,6 +789,12 @@ def main() -> None:
     if not w_fold_metrics.empty:
         print("\nWomen metrics (mean by model/regime):")
         print(w_fold_metrics.groupby(["model", "regime"], as_index=False)[["brier", "log_loss"]].mean().sort_values("brier"))
+
+    print("\n=== EXPERIMENTAL ABLATION SUMMARY ===")
+    print("Compare these numbers against main pipeline baselines:")
+    print("  Men baseline:   stack=0.188289, logreg=0.188304")
+    print("  Women baseline: logreg=0.144123, stack=0.145160")
+    print("Look for xgb_margin in tournament_only regime above.")
 
 
 if __name__ == "__main__":
